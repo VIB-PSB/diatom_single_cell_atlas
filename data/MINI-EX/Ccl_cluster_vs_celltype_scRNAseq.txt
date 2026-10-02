@@ -1,0 +1,16 @@
+1	Vegetative
+2	Gametangia
+3	Stress
+4	Gametangia
+5	Gametangia
+6	Gametangia
+7	Gametangia
+8	Gametangia
+9	Gametangia
+10	Gametes
+11	Gametes
+12	Gametes
+13	Gametes
+14	Auxospores
+15	Auxospores
+16	Auxospores

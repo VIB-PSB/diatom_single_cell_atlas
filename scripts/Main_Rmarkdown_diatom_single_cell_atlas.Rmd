@@ -1,0 +1,661 @@
+
+---
+title: "A Myb-dominated gene regulatory network universally controls sexual cell fate transitions in diatoms"
+author: "Gust Bilcke"
+abstract: "Single-cell transcriptomic analyses that recreate key results and figures from: A Myb-dominated gene regulatory network universally controls sexual cell fate transitions in diatoms "
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    
+---
+
+
+# Continuous light (LL) experiments
+
+## Download Seurat object from NCBI GEO
+
+```{bash; eval = FALSE}
+
+cd data/
+wget https://ftp.ncbi.nlm.nih.gov/geo/series/GSE303nnn/GSE303315/suppl/GSE303315%5FseuratObj%5Ffor%5Fpublication%2Erds
+
+```
+
+## Load Seurat object & get statistics
+
+```{r}
+
+# Required packages
+library(slingshot); library(RColorBrewer); library(viridis); library(UCell); library(Seurat); library(openxlsx); library(ggplot2); library(paletteer); library(tradeSeq); library(dplyr); library(tidyr); library(ggnewscale); library(cowplot);  library(ggridges); library(clusterProfiler); library(ggbump)
+
+# Seurat object (continuous light)
+seuratObj <- readRDS("../data/GSE303315_seuratObj_for_publication.rds" )
+
+# Number of cells
+table(seuratObj@meta.data$Cluster)
+table(seuratObj$Sample)
+length(seuratObj$Sample)
+
+# Number of UMIs per cell
+mean(seuratObj$nCount_RNA) 
+mean(seuratObj$nCount_RNA[seuratObj$Sample == "T12"]) 
+mean(seuratObj$nCount_RNA[seuratObj$Sample == "T19"]) 
+mean(seuratObj$nCount_RNA[seuratObj$Sample == "T24"]) 
+
+# Total number of UMIs
+sum(seuratObj$nCount_RNA) 
+sum(seuratObj$nCount_RNA[seuratObj$Sample == "T12"]) 
+sum(seuratObj$nCount_RNA[seuratObj$Sample == "T19"]) 
+sum(seuratObj$nCount_RNA[seuratObj$Sample == "T24"]) 
+
+# total Number of genes expressed (per set of cells)
+RNA_data <- as.data.frame(seuratObj@assays$RNA@data)
+expressed <- rowSums(RNA_data)
+expressed_T12 <- rowSums(RNA_data[seuratObj$Sample == "T12"])
+expressed_T19 <- rowSums(RNA_data[seuratObj$Sample == "T19"])
+expressed_T24 <- rowSums(RNA_data[seuratObj$Sample == "T24"])
+table(expressed > 0)
+table(expressed_T12 > 0)
+table(expressed_T19 > 0)
+table(expressed_T24 > 0)
+
+# average number of genes expressed / cell 
+expr_vector <- colSums(RNA_data > 0)
+mean(expr_vector)
+mean(expr_vector[seuratObj$Sample == "T12"])
+mean(expr_vector[seuratObj$Sample == "T19"])
+mean(expr_vector[seuratObj$Sample == "T24"])
+
+```
+
+## Annotate UMAP
+
+### Cell cycle phasing 
+
+```{r}
+
+CC <- read.xlsx("../data/cell_cycle_markers_Ccl.xlsx")
+seuratObj <- CellCycleScoring(seuratObj, s.features = CC$gene_ID[CC$cell_cycle_stage == "G1 S" | CC$cell_cycle_stage == "S"], CC$gene_ID[CC$cell_cycle_stage == "M"],set.ident = F)
+
+CCcols <- c("orange", "#E33D6F", "#297FD5", "tan")
+CC_plot <- DimPlot(seuratObj, reduction="SCT_umap", group.by = "Phase", pt.size=0.22, cols = CCcols) + theme(legend.position = "none")  + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2")
+CC_plot
+
+```
+
+### Annotate using bulk RNA-seq time series from Audoor et al. (https://onlinelibrary.wiley.com/doi/10.1111/mec.17320)
+
+Plotting the average log2 fold changes of the top-20 top markers for each cluster
+
+```{r}
+
+# Load data
+results <- read.xlsx("../data/Audoor_results_DE_Ccl.xlsx",1)[c(1,2,3,4)]
+results <- results[results$contrast != "overall",]
+allmarkers20 <- read.delim("../data/allMarkers20.txt")
+
+# Analyze & plot
+clusterlist <- list()
+pal <- paletteer_c("ggthemes::Classic Red-Blue", 30)
+
+for (cluster in allmarkers20$cluster){
+  allmarkers20$gene2[allmarkers20$cluster == cluster] <- unlist(lapply(allmarkers20$gene[allmarkers20$cluster == cluster], function(x) gsub(x, pattern = "-", replacement = "_")))
+  res_sel <- results[results$gene_ID %in% allmarkers20$gene2[allmarkers20$cluster == cluster],]
+  res_agg <- aggregate(res_sel$LFC, by = list(res_sel$contrast), "mean")
+  res_agg$cluster <- cluster
+  clusterlist[[cluster]] <- res_agg
+}
+
+clusterexpr <- do.call(rbind, clusterlist)
+colnames(clusterexpr) <- c("contrast", "LFC", "cluster")
+
+clusterexpr$cluster <- factor(clusterexpr$cluster, levels = 1:16)
+clusterexpr$contrast <- factor(clusterexpr$contrast, levels = c("T3", "T2", "T1"))
+
+ggplot(clusterexpr) +
+    geom_tile(aes(x = contrast, y = cluster, fill = LFC)) +
+     scale_fill_gradientn(colours = rev(pal), limits = c(-max(abs(clusterexpr$LFC)),max(abs(clusterexpr$LFC))), na.value = "grey40") +
+    theme_light() +
+    theme(panel.grid = element_blank(), axis.ticks = element_blank()) +
+    xlab("Bulk DE time point") +
+    ylab("Single-cell cluster") +
+  coord_flip()
+
+```
+
+### Annotate SIP (sex-inducing pheromone) response, using bulk RNA-seq data from Belisova, Bilcke et al. 2025 https://nph.onlinelibrary.wiley.com/doi/10.1111/nph.20334 
+
+```{r}
+
+
+# Load data
+SIP_9h <- read.delim("../data/SIP_9h_DE_Belisova2025.txt")
+SIP_9h$gene <- unlist(lapply(SIP_9h$gene_ID, function(x) gsub("_", "-", x)))
+sip_9hgenes <- SIP_9h$gene[SIP_9h$adjP < 0.05 & SIP_9h$logFC >0]
+
+markers <- read.xlsx("../data/allmarkers_annotated.xlsx")
+
+# Link SIP response to UMAP using UCELL
+signatures4 <- list(sip_9hgenes = sip_9hgenes)
+seuratObj <- AddModuleScore_UCell(seuratObj, features=signatures4, name = NULL)
+FeaturePlot(seuratObj, reduction="SCT_umap", features = names(signatures4), pt.size=0.22)  + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+```
+
+### Visualize different annotations on UMAP
+
+```{r}
+
+DimPlot(seuratObj, reduction="SCT_umap", group.by = "Sample", pt.size=0.22)+ labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+DimPlot(seuratObj, reduction="SCT_umap", group.by = "Cluster", pt.size=0.22)+ labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+DimPlot(seuratObj, reduction="SCT_umap", group.by = "Cell_type", pt.size=0.22)+ labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+DimPlot(seuratObj, reduction="SCT_umap", group.by = "Genotype", pt.size=0.22)+ labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+DimPlot(seuratObj, reduction="SCT_umap", group.by = "CellCyclePhase", pt.size=0.22)+ labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+```
+## Trajectory inference
+
+### Fit trajectory with Slingshot
+
+```{r}
+
+coordinates <- data.frame(seuratObj@reductions$SCT_umap@cell.embeddings[! seuratObj@meta.data$Cluster %in% c(3,2,11,8, 12,13),])
+clusters <- seuratObj@meta.data$Cluster[! seuratObj@meta.data$Cluster %in% c(3,2,11, 8,12,13)]
+
+sling <- slingshot(coordinates, clusters,start.clus = '1', end.clus = '16')
+
+coordinates3 <- data.frame(seuratObj@reductions$SCT_umap@cell.embeddings)
+pseudotimes <-slingPseudotime( slingshot::predict(sling, coordinates3))
+weights <- slingCurveWeights( slingshot::predict(sling, coordinates3))
+sling2 <-  slingshot::predict(sling, coordinates3)
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(pseudotimes, breaks=100)]
+
+# pdf(file = "plots/Trajectory_inference/entire_trajectory_pseudotime2.pdf")
+par(mar = c(1,1,1,1))
+plot(coordinates3, col = plotcol,  pch=16, asp = 0.8, cex = 1)
+lines(SlingshotDataSet(sling), lwd=5, col = 'black')
+# dev.off()
+
+# Save to Seurat Object
+seuratObj@meta.data$pseudotime <- pseudotimes
+seuratObj@meta.data$weights <- weights
+FeaturePlot(seuratObj, reduction="SCT_umap",  pt.size=0.05, features = "pseudotime") +xlab("sctUMAP 1")+ylab("sctUMAP 2") +scale_color_gradientn(colours = viridis(n = 10)) + theme(legend.position = "none")
+
+# Cell type composition along pseudotime
+celltypecols <- c("#E64B35",  "tan4", "orange", "#90ba4c", "#477bd1")
+ggplot() +
+  geom_density(aes(x = seuratObj@meta.data$pseudotime[seuratObj@meta.data$Cell_type != "Stressed cells"], fill = seuratObj@meta.data$Cell_type[seuratObj@meta.data$Cell_type != "Stressed cells"]), position="fill") +
+  scale_fill_manual(values = celltypecols) +
+  theme_bw() +
+    theme(panel.grid = element_blank()) +
+    scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  xlab("pseudotime") +
+  theme(axis.text.y = element_blank(), axis.title.y = element_blank(), axis.ticks.y = element_blank(), legend.title=element_blank())
+
+```
+#### Evaluate number of knots 
+
+```{r; eval = FALSE}
+
+counts <- as.matrix(seuratObj@assays$RNA@counts)
+
+icMat <- evaluateK(counts =  counts,
+          pseudotime = seuratObj@meta.data$pseudotime,
+          cellWeights = seuratObj@meta.data$weights,
+          nGenes = 100,
+          k = 3:10  )
+
+```
+
+Relative AIC levels off at N=8 --> choose 8 knots
+
+#### Fit generalized additive models (GAMs)
+
+Run shell script at /scripts/associationTest/run_figGAM_cluster.sh
+
+The output is saved in data/save_GAM_8knots.rdata
+
+#### Perform associationtest (TradeSeq)
+
+```{r}
+
+load("../data/save_GAM_8knots.rdata") # Fitted GAM smoothers
+assoc_test <- associationTest(models = gam, contrastType = "end", l2fc =sqrt(3), nPoints = 14) # npoints = 14 to avoid NAs
+
+# Filtering
+# Keep only those 8139 genes that are expressed in at least 50 cells with at least 2 UMIs. Loaded from a separate file for memory control
+keepgenes <- as.character(read.table("../data/keep_genes_filtering.txt", header = T)$x)
+assoc_test2 <- assoc_test[rownames(assoc_test) %in% keepgenes,] # 8139 kept
+
+assoc_test2$adjP <- p.adjust(assoc_test2$pvalue, "BH")
+sum(assoc_test2$adjP < 0.05 & ! is.na(assoc_test2$adjP)) # 3703 associated genes
+
+# save(assoc_test2, file =  "../data/association_test2.RData")
+
+```
+
+## Mating type-specific expression 
+
+### Test for genes with mating-type-specific expression
+
+```{r}
+
+seuratMT <- subset(seuratObj, subset = (Consensus_matingtype == "MT+" | Consensus_matingtype == "MT-"))
+Idents(seuratMT) <- seuratMT@meta.data$Consensus_matingtype
+allmarkers_MT <- FindAllMarkers(object = seuratMT, only.pos = TRUE, logfc.threshold = 3) 
+table(allmarkers_MT$cluster[allmarkers_MT$p_val_adj < 0.05])
+sig_MTmarkers <- allmarkers_MT[allmarkers_MT$p_val_adj < 0.05,]
+
+```
+
+### Clustering expression of mating types over pseudotime
+
+```{r}
+
+load("../data/predicted_MT_GAMs.RData") # Predicted expression on 60 pseudotime points per mating type   
+sig_MTmarkers <- read.xlsx("../data/MT_genes_annotation.xlsx", 1)
+
+predicted_plus <- df[df$lineage == "MT+" & df$gene_ID %in% sig_MTmarkers$gene[sig_MTmarkers$cluster == "MT+"],] # Cluster only on the pattern of the "dominant" MT
+predicted_min <- df[df$lineage == "MT-" & df$gene_ID %in% sig_MTmarkers$gene[sig_MTmarkers$cluster == "MT-"],] # Cluster only on the pattern of the "dominant" MT
+
+# Clustering the plus genes
+k = 4
+plus_wide <- spread(predicted_plus[c(1,3,4)], key = "gene_ID", value = "expr")
+rownames(plus_wide) <- plus_wide$pseudotime
+plus_wide <- plus_wide[-1]
+dist_plus <- as.dist(1-cor(plus_wide))
+clust_plus <- hclust(dist_plus)
+clusters_plus <- cutree(clust_plus, k = k)
+plot(clust_plus)
+
+# Clustering the minus genes
+min_wide <- spread(predicted_min[c(1,3,4)], key = "gene_ID", value = "expr")
+rownames(min_wide) <- min_wide$pseudotime
+min_wide <- min_wide[-1]
+dist_min <- as.dist(1-cor(min_wide))
+clust_min <- hclust(dist_min)
+clusters_min <- cutree(clust_min, k = k)
+plot(clust_min)
+
+```
+
+### Define function to plot genes over mating type-specific pseudotime
+
+```{r}
+plotMT_GAM_small <- function(gene_IDs){
+  df2 <- df[df$gene_ID %in% gene_IDs,]
+  ggplot(df2) +
+  geom_line(aes(x = pseudotime, y = expr, colour = lineage, group = interaction(lineage,gene_ID)), size = 0.2) +
+      scale_colour_manual(values = c("#439fb7", "#eb6349")) +
+    new_scale_colour() +
+  stat_summary(aes(x = pseudotime, y = expr, colour = lineage), geom = "line", fun = "mean", size = 3) +
+          scale_colour_manual(values = c("#368195", "#d03517")) +
+  ylab("Relative expression") +
+  xlab("Pseudotime") +
+  theme_bw() +
+    theme(panel.grid = element_blank(), panel.background = element_rect(fill = "grey90")) +
+ scale_y_continuous(limits = c(0, NA)) +
+    scale_y_continuous(expand = expansion( mult = c(0, .05)))
+}
+```
+
+### Extract and plot clusters from the hierarchical clustering
+
+```{r}
+plotlist <- list()
+
+clusters_plus <- cutree(clust_plus, k = k)
+clusters_plus[clusters_plus == 1] <- "3Midlate"
+clusters_plus[clusters_plus == 2] <- "1Early"
+clusters_plus[clusters_plus == 3] <- "2Middle"
+clusters_plus[clusters_plus == 4] <- "4Late"
+
+for (i in c("1Early", "2Middle", "3Midlate", "4Late")) {
+  plot(plotMT_GAM_small(names(clusters_plus)[clusters_plus == i]) + theme(legend.position = "none"))
+}
+
+clusters_min <- cutree(clust_min, k = k)
+clusters_min[clusters_min == 1] <- "4Late"
+clusters_min[clusters_min == 2] <- "1Early"
+clusters_min[clusters_min == 3] <- "2Middle"
+clusters_min[clusters_min == 4] <- "3Midlate"
+
+for (i in c("1Early", "2Middle", "3Midlate", "4Late")) {
+  plot(plotMT_GAM_small(names(clusters_min)[clusters_min == i]) + theme(legend.position = "none"))
+}
+```
+
+## Gene regulation
+
+### Identify transcription factors (TFs) associated with pseudotime
+
+```{r}
+
+# First get association test data for all putative TFs (i.e. those with DNA binding domains)
+putativeTFs <- read.delim("../data/C_closterium_TFs_added.txt")
+load("../data/association_test2.RData")
+associatedgenes <- rownames(assoc_test2[assoc_test2$adjP < 1e-5 & !is.na(assoc_test2$adjP),])
+associatedTFs <- putativeTFs[putativeTFs$gene %in% associatedgenes,] # 58 associated putative TFs
+
+# Filter TFs: Because this figure is a crucial starting point to pinpoint the TFs involved in sex, putative TFs were manually curated
+checkTFs <- read.xlsx("../data/manual_curation_associatedTFs.xlsx") 
+associatedTFs_checked <- associatedTFs[associatedTFs$gene %in% checkTFs$gene[checkTFs$conclusion == "TF"],] # 33 bona fide associated TFs
+associatedTFs_checked$TF <- unlist(lapply(associatedTFs_checked$gene, function(x) checkTFs$newname[checkTFs$gene == x]))
+
+```
+
+### Plot TF ridgeline plots
+
+```{r}
+
+pal_pseudotimes <- paletteer_d("ggthemes::Tableau_20")[seq(1,19, by = 2)]
+genepseudo <- read.delim("../data/gene_ordering_pseudotime.txt")$x # this file is sorted reversely (auxospores first, then ending with vegetative)!
+
+counts <- as.matrix(seuratObj@assays$RNA@counts)
+counts <- as.data.frame(counts)
+
+plot_ridges <- function(df) {
+  gene_IDs <- df$gene
+  selectcounts <- counts[rownames(counts) %in% gene_IDs,]
+  selectcounts$gene_ID  <- rownames(selectcounts)
+  selectcounts$gene_ID <- factor(selectcounts$gene_ID, levels = genepseudo)
+  selectcounts$family <- unlist(lapply(selectcounts$gene_ID, function(x) df$TF[df$gene == x]))
+  selectL <- gather(selectcounts, 1:8674, key = "cell", value = "UMIs" )
+  selectL$pseudotime <- rep(seuratObj@meta.data$pseudotime, each = length(gene_IDs) )
+
+  for (gene_ID in unique(selectL$gene_ID)){
+  x <- predict(loess(selectL$UMIs[selectL$gene_ID == gene_ID]~selectL$pseudotime[selectL$gene_ID == gene_ID], span = 0.3))
+  selectL$smooth[selectL$gene_ID == gene_ID] <- x/max(x)
+  }
+  
+  genepseudo2 <- unlist(lapply(genepseudo, function(x) gsub("-", "_", x)))
+  selectL$gene <- unlist(lapply(selectL$gene_ID, function(x) gsub("-", "_", x)))
+  selectL$gene <- factor(selectL$gene, levels = genepseudo2)
+
+  ggplot(selectL)+
+    geom_hline(yintercept = 0) +
+    geom_ridgeline(aes(x = pseudotime, y = gene , height = smooth, fill = family), scale = 1.5) +
+    ylab("TFs significantly associated with pseudotime") +
+    xlab("Pseudotime") +
+    facet_grid(family ~ ., space = "free", scales = "free") +
+    scale_fill_manual(values = pal_pseudotimes) +
+            theme_classic() +
+        theme(strip.text.y = element_text(angle = 0, hjust = 0), strip.background = element_blank(), legend.position = "none", axis.line.y = element_blank(), axis.ticks.y = element_blank()) +
+    scale_y_discrete(expand = c(0.05, 0)) +
+  coord_cartesian(clip = "off")
+
+  }
+
+associatedTFs_checked$TF <- factor(associatedTFs_checked$TF, levels = c("bZIP", "TCX / CXC", "E2F family", "Myb", "Homeodomain", "HSF", "C2H2 ZnF", "CSF", "Aureochrome"))
+
+plot_ridges(associatedTFs_checked)
+
+```
+
+### Gene regulatory network inference with MINI-EX
+
+#### First export count table for Mini-ex
+
+```{r; eval = FALSE}
+
+write.table(counts, "data/MINI-EX/Ccl_count_matrix_scRNAseq_Ccl.txt", row.names = F, quote = F, sep = "\t")
+
+```
+
+#### Run MINI-EX
+
+MINI-EX config file is stored in scripts/mini_ex_SLURM_LL_run.config
+MINI-EX input data files are stored in data/MINI-EX
+
+On a cluster system, run MINI-EX v1 using NextFlow like this:
+```
+nextflow -C scripts/mini_ex_SLURM_LL_run.config run miniex.nf 
+```
+
+### Explore gene regulatory network
+
+#### Load GRN data
+
+TF: transcription factor
+TG: target gene
+
+```{r}
+
+ranked_regulons <- read.xlsx("../data/MINI-EX_output/Ccl_rankedRegulons.xlsx")
+regulons_TGs <- read.delim("../data/MINI-EX_output/Ccl_regulons.txt", header = F)
+regulons_TGs_long <- separate_rows(regulons_TGs, "V3", sep = ",")
+colnames(regulons_TGs_long) <- c("TF", "cluster", "TG")
+regulons_TGs_long$TF_cluster <- paste0(regulons_TGs_long$TF, "_", regulons_TGs_long$cluster)
+
+length(unique(ranked_regulons$TF)) # 46 regulons driven by 27 TFs
+length(unique(regulons_TGs_long$TG)) # 933 genes driven in those regulons
+
+# Most regulons contain between 100 and 300 TGs
+ggplot() +
+  geom_histogram(aes(x = ranked_regulons$`#TGs`)) +
+  theme_bw() +
+  xlab("# TGs per regulon")
+
+```
+
+## Functional enrichment analysis of TGs within regulons
+
+Using the enricher() function from ClusterProfiler (hypergeometric tests)
+
+The background for hypergeometric tests contains homologous gene families (HOM), interpro domains (IPR), mating type specific genes, and cell cycle stages
+
+```{r}
+
+background <- read.delim("../data/full_enrichment_background.txt")
+
+enrichlist <- list()
+for (regulon in unique(regulons_TGs_long$TF_cluster)){
+  enrichlist[[regulon]] <- cbind(as.data.frame(enricher(regulons_TGs_long$TG[regulons_TGs_long$TF_cluster == regulon], TERM2GENE = background, minGSSize = 1, maxGSSize = 19390, pAdjustMethod = "BH")@result), regulon) 
+}
+
+enrichdf2 <- do.call(rbind, enrichlist)
+enrichdf3 <- enrichdf2[enrichdf2$Count > 3 & enrichdf2$qvalue < 0.05,]
+
+```
+
+Interpretation enrichment table ("enrichdf3"): M-phase (meiosis) is enriched among the target genes of Myb regulons in Clusters 6 and 7
+
+# Diurnal cycle (LD) experiments
+
+## Download Seurat object from NCBI GEO
+
+```{bash; eval = FALSE}
+
+cd data/
+wget https://ftp.ncbi.nlm.nih.gov/geo/series/GSE303nnn/GSE303315/suppl/GSE303315%5FseuratObj2%5Ffor%5Fpublication%2Erds
+
+```
+
+## Get statistics
+
+```{r}
+
+# Seurat object (continuous light)
+seurat_diurnal <- readRDS("../data/GSE303315_seuratObj2_for_publication.rds" )
+
+# Number of cells
+table(seurat_diurnal@meta.data$Experiment)
+
+# Number of UMIs per cell 
+mean(seurat_diurnal$nCount_RNA[seurat_diurnal$Experiment == "Light"]) # 4147.889
+mean(seurat_diurnal$nCount_RNA[seurat_diurnal$Experiment == "Dark"]) # 3232.512
+
+# Total number of UMIs 
+sum(seurat_diurnal$nCount_RNA[seurat_diurnal$Experiment == "Light"]) # 22,070,920
+sum(seurat_diurnal$nCount_RNA[seurat_diurnal$Experiment == "Dark"]) # 28,261,856
+
+# total Number of genes expressed (per set of cells)
+RNA_data <- as.data.frame(GetAssayData(seurat_diurnal, assay = "RNA", layer = "counts"))
+expressed <- rowSums(RNA_data)
+expressed_L <- rowSums(RNA_data[seurat_diurnal$Experiment == "Light"])
+expressed_D <- rowSums(RNA_data[seurat_diurnal$Experiment == "Dark"])
+table(expressed > 0) # 19,949 genes are expressed in total
+table(expressed_L > 0) # 19,514 
+table(expressed_D > 0) # 19,604 
+
+# average number of genes expressed / cell
+expr_vector <- colSums(RNA_data > 0)
+mean(expr_vector) # 1701
+mean(expr_vector[seurat_diurnal$Experiment == "Light"]) # 1984
+mean(expr_vector[seurat_diurnal$Experiment == "Dark"]) # 1529
+
+# cells per cell type
+table(seurat_diurnal@meta.data$Experiment, seurat_diurnal@meta.data$Cell_type)
+
+```
+
+## Plot features on unprojected UMAP
+
+```{r}
+
+Idents(seurat_diurnal) <- seurat_diurnal@meta.data$Cluster
+
+clustercols = c("#e6194b", "#3cb44b", "grey30", "orange1", "#4363d8", "violetred", "wheat3", "#f58231", "seagreen3", "violetred2", "gold1", "tomato2", "tan3", "cornflowerblue", "violet", "yellowgreen", "grey", "hotpink4")
+
+celltypecols <- c("Vegetative / early signaling" = "#E64B35", "Stressed cells" = "grey70" ,"Mate finding" = "tan4", "Paired cells"="orange", "Gametes" = "#90ba4c","Zygotes & auxospores" = "#477bd1")
+
+DimPlot(seurat_diurnal, reduction="SCT_umap", label=TRUE, label.size= 5, pt.size=0.22, cols = clustercols) + xlab("sctUMAP 1") + ylab("sctUMAP 2") 
+
+DimPlot(seurat_diurnal, reduction="SCT_umap", group.by = "Experiment", pt.size=0.22, cols = c("steelblue4", "gold2")) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+DimPlot(seurat_diurnal, reduction="SCT_umap", group.by = "Cell_type", pt.size=0.22, cols = celltypecols) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+```
+## Plot features on projected UMAP (original UMAP of LL experiments)
+
+```{r}
+
+p <- DimPlot(seurat_diurnal, reduction="ref.umap", label=F, pt.size=0.3, cols = clustercols) + xlab("sctUMAP 1") + ylab("sctUMAP 2") 
+LabelClusters(p, id = "ident",  repel = F,  label.size= 3)
+
+DimPlot(seurat_diurnal, reduction="ref.umap", group.by = "Experiment", pt.size=0.18, cols = c("steelblue4", "gold2")) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+DimPlot(seurat_diurnal, reduction="ref.umap", group.by = "Cell_type", pt.size=0.3, cols = celltypecols) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+```
+
+## Formal analysis of top TFs for each library
+
+Goal: Identify markers for gametogenesis for each of the 5 scRNA-seq libraries seperately: LL 12h, LL 19h, LL 24h, LD Light, LD Dark
+
+### Define Gametogenesis cells in each dataset
+
+```{r}
+
+seuratObj@meta.data$Cell_type2 <- "Other"
+seuratObj@meta.data$Cell_type2[seuratObj@meta.data$Cluster %in% c(6,7,8,9)] <- "Gametogenesis"
+DimPlot(seuratObj, reduction="SCT_umap", group.by = "Cell_type2", pt.size=0.3) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+seurat_diurnal@meta.data$Cell_type2 <- "Other"
+seurat_diurnal@meta.data$Cell_type2[seurat_diurnal@meta.data$Cluster == "J"] <- "Gametogenesis"
+DimPlot(seurat_diurnal, reduction="ref.umap", group.by = "Cell_type2", pt.size=0.3) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+```
+
+
+### subset both LL and DL data into seperate experiments
+
+```{r}
+
+# Create 5 independent Seurat objects
+T12 <- subset(x = seuratObj, subset = Sample == "T12")
+T19 <- subset(x = seuratObj, subset = Sample == "T19")
+T24 <- subset(x = seuratObj, subset = Sample == "T24")
+Light <- subset(x = seurat_diurnal, subset = Experiment == "Light")
+Dark <- subset(x = seurat_diurnal, subset = Experiment == "Dark")
+
+# Check with UMAPs that the subsetting worked
+clustercols = c("#e6194b", "#3cb44b", "grey30", "orange1", "#4363d8", "violetred", "wheat3", "#f58231", "seagreen3", "violetred2", "gold1", "tomato2", "tan3", "cornflowerblue", "violet", "yellowgreen", "grey", "hotpink4")
+
+DimPlot(T12, reduction="SCT_umap", pt.size=0.3, cols = clustercols) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+DimPlot(T19, reduction="SCT_umap", pt.size=0.3, cols = clustercols) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+DimPlot(T24, reduction="SCT_umap", pt.size=0.3, cols = clustercols) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+DimPlot(Light, reduction="ref.umap", pt.size=0.3, cols = clustercols) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+DimPlot(Dark, reduction="ref.umap", pt.size=0.3,  cols = clustercols) + labs(title = "")+xlab("sctUMAP 1")+ylab("sctUMAP 2") 
+
+```
+
+### Find markers for gametogenesis in each experiment & subset for TFs
+
+```{r}
+
+# Calculate markers for GAMETOGENESIS vs ALL OTHER CELLS
+T12_markers_paired <- FindMarkers(T12, ident.1 = "Gametogenesis", group.by = "Cell_type2")
+T19_markers_paired <- FindMarkers(T19, ident.1 = "Gametogenesis", group.by = "Cell_type2")
+T24_markers_paired <- FindMarkers(T24, ident.1 = "Gametogenesis", group.by = "Cell_type2")
+Light_markers_paired <- FindMarkers(Light, ident.1 = "Gametogenesis", group.by = "Cell_type2")
+Dark_markers_paired <- FindMarkers(Dark, ident.1 = "Gametogenesis", group.by = "Cell_type2") #  despite having very few "paired cells" in the Dark sample, we can still find marker genes!
+
+# Subset for only the TFs & clean the TF categories
+TFs <- read.delim("../data/C_closterium_TFs_added.txt")
+TFs <- TFs[! TFs$TF %in% c("SAP", "GARP", "LITAF (Zn)", "Sigma-70", "BolA", "Nin-like", "Tub ", "TAF", "MIZ (Zn)"),] # These are most likely not TF families
+TFs$TF[TFs$TF == " Myb SHAQKYF"] <- "Myb"
+TFs$TF[TFs$TF == "CCCH Zn finger"] <- "C3H ZnF"
+TFs$TF[TFs$TF == "Homeodomain"] <- "HD/PHD"
+TFs$TF[TFs$TF == "C2H2 Zn finger"] <- "C2H2 ZnF"
+TFs$TF[TFs$TF == "CBF/NF-Y/archaeal"] <- "NF-Y"
+TFs$TF[TFs$TF == "CPP (TCR)"] <- "CPP"
+TFs$TF[TFs$TF == "E2F/DP"] <- "E2F"
+TFs$TF[TFs$TF == "TATA-binding (Zn)"] <- "TATA-binding"
+
+# Subset for TFs in Paired cells that are UPREGULATED
+T12_TFs_paired <- T12_markers_paired[rownames(T12_markers_paired) %in% TFs$gene & T12_markers_paired$avg_log2FC > 0,]
+T19_TFs_paired <- T19_markers_paired[rownames(T19_markers_paired) %in% TFs$gene & T19_markers_paired$avg_log2FC > 0,]
+T24_TFs_paired <- T24_markers_paired[rownames(T24_markers_paired) %in% TFs$gene & T24_markers_paired$avg_log2FC > 0,]
+Light_TFs_paired <- Light_markers_paired[rownames(Light_markers_paired) %in% TFs$gene & Light_markers_paired$avg_log2FC > 0,]
+Dark_TFs_paired <- Dark_markers_paired[rownames(Dark_markers_paired) %in% TFs$gene & Dark_markers_paired$avg_log2FC > 0,]
+
+T12_TFs_paired <- tibble::rownames_to_column(T12_TFs_paired, "gene")
+T19_TFs_paired <- tibble::rownames_to_column(T19_TFs_paired, "gene")
+T24_TFs_paired <- tibble::rownames_to_column(T24_TFs_paired, "gene")
+Light_TFs_paired <- tibble::rownames_to_column(Light_TFs_paired, "gene")
+Dark_TFs_paired <- tibble::rownames_to_column(Dark_TFs_paired, "gene")
+
+library(dplyr)
+T12_TFs_paired <- left_join(T12_TFs_paired, TFs, by = c("gene" = "gene"))
+T19_TFs_paired <- left_join(T19_TFs_paired, TFs, by = c("gene" = "gene"))
+T24_TFs_paired <- left_join(T24_TFs_paired, TFs, by = c("gene" = "gene"))
+Light_TFs_paired <- left_join(Light_TFs_paired, TFs, by = c("gene" = "gene"))
+Dark_TFs_paired <- left_join(Dark_TFs_paired, TFs, by = c("gene" = "gene"))
+
+# Get statistics
+Reduce(intersect, list(T12_TFs_paired$hits[1:9],T19_TFs_paired$hits[1:9], T24_TFs_paired$hits[1:9], Light_TFs_paired$hits[1:9], Dark_TFs_paired$hits[1:9]))
+
+```
+
+7/9 of the top-9 TFs are shared between every independent experiment
+
+## Plot bump-plot of the top TFs for each experiment
+
+```{r}
+
+paired_tfs <- rbind(T12_TFs_paired[1:9,],T19_TFs_paired[1:9,],T24_TFs_paired[1:9,],Light_TFs_paired[1:9,],Dark_TFs_paired[1:9,])
+paired_tfs$experiment <- c(rep("T12", 9),rep("T19", 9),rep("T24", 9),rep("Light", 9),rep("Dark", 9))
+paired_tfs$rank <- rep(factor(1:9, levels = 9:1), 5)
+paired_tfs$experiment <- factor(paired_tfs$experiment, levels = c("T12", "T19","T24", "Light", "Dark"))
+
+paired_tfs$gene <- gsub("Ccl-", "Ccl_", paired_tfs$gene)
+
+ggplot(paired_tfs) +
+    geom_bump(aes(x = experiment, xend = experiment, y = rank, yend = rank, group = gene), size = 3, color = "grey", smooth = 9) +
+  geom_label(aes(x = experiment, y = rank, fill = TF, label = gene), label.padding = unit(0.35, "lines"), size = 3.1) +
+  theme_minimal() +
+  scale_fill_manual(values = c(CSD = "#d37295", E2F = "#4bb42aff","HD/PHD" = "#22a4a2ff",HSF = "#e15759ff",Myb = "#b6992dff", "Fork head " = "yellow2", "C2H2 ZnF" = "#79706e", "C3H ZnF" = "white")) +
+  theme(panel.grid = element_blank())
+
+```
+
+
+

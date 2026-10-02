@@ -1,0 +1,2 @@
+/scratch/diatomcomp/scRNA_seq/Data/demultiplexing/Library1_sorted.bam
+ 
